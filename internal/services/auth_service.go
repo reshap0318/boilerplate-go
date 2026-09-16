@@ -96,6 +96,9 @@ func (s *Services) AuthLogin(ctx context.Context, email, password string) (*dtos
 		userWithRoles = user
 	}
 
+	// Drop any stale access cache so login always reflects current roles/permissions.
+	s.Access.Invalidate(userWithRoles.ID)
+
 	// Cache UserDTO to Redis with fallback
 	if s.RedisClient.IsCacheAvailable() {
 		userDTO := dtos.ToUserDTO(userWithRoles)
