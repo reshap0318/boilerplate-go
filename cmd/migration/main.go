@@ -52,6 +52,9 @@ func main() {
 	case "seed":
 		gormDB := initGORM(dbConnection, dbHost, dbPort, dbUser, dbPassword, dbName)
 		runSeed(gormDB)
+	case "sync-rbac":
+		gormDB := initGORM(dbConnection, dbHost, dbPort, dbUser, dbPassword, dbName)
+		runSyncRBAC(gormDB)
 	case "refresh":
 		runMigration(dbConnection, dbHost, dbPort, dbUser, dbPassword, dbName, "reset")
 		gormDB := initGORM(dbConnection, dbHost, dbPort, dbUser, dbPassword, dbName)
@@ -68,16 +71,18 @@ func printUsage() {
 	fmt.Println("Usage: go run cmd/migration/main.go <command>")
 	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  up       Apply all migrations (create/update tables)")
-	fmt.Println("  down     Rollback last migration")
-	fmt.Println("  seed     Insert default data")
-	fmt.Println("  refresh  Rollback all, re-apply migrations, and seed data")
-	fmt.Println("  status   Show migration status")
+	fmt.Println("  up         Apply all migrations (create/update tables)")
+	fmt.Println("  down       Rollback last migration")
+	fmt.Println("  seed       Insert default data")
+	fmt.Println("  sync-rbac  Sync permissions and roles defined in code with the database")
+	fmt.Println("  refresh    Rollback all, re-apply migrations, and seed data")
+	fmt.Println("  status     Show migration status")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  go run cmd/migration/main.go up")
 	fmt.Println("  go run cmd/migration/main.go down")
 	fmt.Println("  go run cmd/migration/main.go seed")
+	fmt.Println("  go run cmd/migration/main.go sync-rbac")
 	fmt.Println("  go run cmd/migration/main.go refresh")
 	fmt.Println("  go run cmd/migration/main.go status")
 }
@@ -209,6 +214,16 @@ func runSeed(db *gorm.DB) {
 	seeders.SeedUserRoles(db, userEmails, roleIDs)
 
 	fmt.Println("\n✅ Seeding completed!")
+}
+
+func runSyncRBAC(db *gorm.DB) {
+	fmt.Println("\nSyncing RBAC with the database...")
+
+	if err := seeders.SyncRBAC(db); err != nil {
+		log.Fatalf("RBAC sync failed: %v", err)
+	}
+
+	fmt.Println("\n✅ RBAC sync completed!")
 }
 
 func initGORM(dbConnection, dbHost, dbPort, dbUser, dbPassword, dbName string) *gorm.DB {

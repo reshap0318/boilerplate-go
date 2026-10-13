@@ -2,9 +2,47 @@ package helpers
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
+
+// Response codes.
+const (
+	CodeOK                  = "OK"
+	CodeCreated             = "CREATED"
+	CodeBadRequest          = "BAD_REQUEST"
+	CodeUnauthorized        = "UNAUTHORIZED"
+	CodeForbidden           = "FORBIDDEN"
+	CodeNotFound            = "NOT_FOUND"
+	CodeValidationError     = "VALIDATION_ERROR"
+	CodeInternalServerError = "INTERNAL_SERVER_ERROR"
+)
+
+var statusCodes = map[int]string{
+	http.StatusOK:                  CodeOK,
+	http.StatusCreated:             CodeCreated,
+	http.StatusBadRequest:          CodeBadRequest,
+	http.StatusUnauthorized:        CodeUnauthorized,
+	http.StatusForbidden:           CodeForbidden,
+	http.StatusNotFound:            CodeNotFound,
+	http.StatusUnprocessableEntity: CodeValidationError,
+	http.StatusInternalServerError: CodeInternalServerError,
+}
+
+// CodeFromStatus returns the response code for an HTTP status code.
+func CodeFromStatus(statusCode int) string {
+	if code, ok := statusCodes[statusCode]; ok {
+		return code
+	}
+
+	text := http.StatusText(statusCode)
+	if text == "" {
+		return "UNKNOWN"
+	}
+
+	return strings.ToUpper(strings.ReplaceAll(text, " ", "_"))
+}
 
 // PaginationMeta represents pagination metadata in response.
 type PaginationMeta struct {
@@ -22,7 +60,7 @@ type PaginatedResponseInterface interface {
 
 // Response represents a standard HTTP response structure
 type Response struct {
-	Code    int                 `json:"code"`
+	Code    string              `json:"code"`
 	Message string              `json:"message"`
 	Data    interface{}         `json:"data,omitempty"`
 	Errors  map[string][]string `json:"errors,omitempty"`
@@ -30,8 +68,13 @@ type Response struct {
 
 // SuccessResponse sends a success response with optional data
 func SuccessResponse(c *gin.Context, statusCode int, message string, data interface{}) {
+	SuccessResponseWithCode(c, statusCode, CodeFromStatus(statusCode), message, data)
+}
+
+// SuccessResponseWithCode sends a success response with a custom code.
+func SuccessResponseWithCode(c *gin.Context, statusCode int, code string, message string, data interface{}) {
 	resp := Response{
-		Code:    statusCode,
+		Code:    code,
 		Message: message,
 		Data:    data,
 	}
@@ -40,8 +83,13 @@ func SuccessResponse(c *gin.Context, statusCode int, message string, data interf
 
 // ErrorResponse sends an error response
 func ErrorResponse(c *gin.Context, statusCode int, message string) {
+	ErrorResponseWithCode(c, statusCode, CodeFromStatus(statusCode), message)
+}
+
+// ErrorResponseWithCode sends an error response with a custom code.
+func ErrorResponseWithCode(c *gin.Context, statusCode int, code string, message string) {
 	resp := Response{
-		Code:    statusCode,
+		Code:    code,
 		Message: message,
 	}
 	c.JSON(statusCode, resp)
@@ -55,7 +103,7 @@ func OK(c *gin.Context, message string, data interface{}) {
 // OKWithMetadata sends 200 OK response with pagination metadata extracted from PaginatedResponse
 func OKWithMetadata(c *gin.Context, message string, paginated PaginatedResponseInterface) {
 	c.JSON(http.StatusOK, gin.H{
-		"code":     http.StatusOK,
+		"code":     CodeOK,
 		"message":  message,
 		"data":     paginated.GetData(),
 		"metadata": paginated.GetMetadata(),
@@ -95,7 +143,7 @@ func InternalServerError(c *gin.Context, message string) {
 // ValidationResponse sends 422 Unprocessable Entity response with pre-formatted errors map.
 func ValidationResponse(c *gin.Context, errorsMap map[string][]string) {
 	resp := Response{
-		Code:    http.StatusUnprocessableEntity,
+		Code:    CodeValidationError,
 		Message: "The given data was invalid.",
 		Errors:  errorsMap,
 	}
@@ -126,7 +174,13 @@ func HandleError(c *gin.Context, err error, fallbackMsg string) bool {
 		if status == 0 {
 			status = http.StatusBadRequest
 		}
-		ErrorResponse(c, status, ce.Message)
+
+		code := ce.Code
+		if code == "" {
+			code = CodeFromStatus(status)
+		}
+
+		ErrorResponseWithCode(c, status, code, ce.Message)
 		return true
 	}
 

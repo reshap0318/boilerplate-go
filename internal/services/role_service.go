@@ -82,7 +82,7 @@ func (s *Services) RoleGetAll(ctx context.Context, opts *repositories.QueryOptio
 	}
 	opts.Preloads = []string{"Permissions"}
 
-	if !s.Access.HasPermission(ctx, "role.index-su") {
+	if !s.Access.HasPermission(ctx, dtos.PermissionRoleIndexSu) {
 		opts.ConditionGroups = append(opts.ConditionGroups, repositories.ConditionGroup{
 			Logic: "AND",
 			Conditions: []repositories.QueryCondition{
@@ -109,7 +109,7 @@ func (s *Services) RoleGetAll(ctx context.Context, opts *repositories.QueryOptio
 
 // RoleGetByID returns a role by ID with permissions.
 func (s *Services) RoleGetByID(ctx context.Context, id uint) (*dtos.RoleDTO, error) {
-	if id == 1 && !s.Access.HasPermission(ctx, "role.index-su") {
+	if id == 1 && !s.Access.HasPermission(ctx, dtos.PermissionRoleIndexSu) {
 		return nil, helpers.ErrForbidden
 	}
 
@@ -126,7 +126,7 @@ func (s *Services) RoleGetByID(ctx context.Context, id uint) (*dtos.RoleDTO, err
 func (s *Services) RoleUpdate(ctx context.Context, id uint, req dtos.RoleRequest) (*dtos.RoleDTO, error) {
 	s.Logger.LogStart("RoleUpdate", "Updating role ID: %d", id)
 
-	if id == 1 && !s.Access.HasPermission(ctx, "role.index-su") {
+	if id == 1 && !s.Access.HasPermission(ctx, dtos.PermissionRoleIndexSu) {
 		s.Logger.LogEndWithError("RoleUpdate", "Forbidden access to role ID: %d", id)
 		return nil, helpers.ErrForbidden
 	}
@@ -197,7 +197,7 @@ func (s *Services) RoleUpdate(ctx context.Context, id uint, req dtos.RoleRequest
 func (s *Services) RoleDelete(ctx context.Context, id uint) error {
 	s.Logger.LogStart("RoleDelete", "Deleting role ID: %d", id)
 
-	if id == 1 && !s.Access.HasPermission(ctx, "role.index-su") {
+	if id == 1 && !s.Access.HasPermission(ctx, dtos.PermissionRoleIndexSu) {
 		s.Logger.LogEndWithError("RoleDelete", "Forbidden access to role ID: %d", id)
 		return helpers.ErrForbidden
 	}

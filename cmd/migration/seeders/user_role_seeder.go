@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/reshap0318/go-boilerplate/internal/dtos"
 	"github.com/reshap0318/go-boilerplate/internal/models"
 	"gorm.io/gorm"
 )
@@ -13,10 +14,10 @@ func SeedUserRoles(db *gorm.DB, userEmails map[string]uint, roleIDs map[string]u
 	fmt.Println("Seeding user roles...")
 
 	userRoles := map[string]string{
-		"suAdmin@app.com": "Super Admin",
-		"admin@app.com":   "Admin",
-		"editor@app.com":  "Editor",
-		"viewer@app.com":  "Viewer",
+		"suAdmin@app.com": dtos.RoleSuperAdmin,
+		"admin@app.com":   dtos.RoleAdmin,
+		"editor@app.com":  dtos.RoleEditor,
+		"viewer@app.com":  dtos.RoleViewer,
 	}
 
 	count := 0

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/reshap0318/go-boilerplate/internal/dtos"
 	"github.com/reshap0318/go-boilerplate/internal/models"
 	"gorm.io/gorm"
 )
@@ -12,19 +13,9 @@ import (
 func SeedRoles(db *gorm.DB) map[string]uint {
 	fmt.Println("Seeding roles...")
 
-	roles := []struct {
-		Name        string
-		Description string
-	}{
-		{"Super Admin", "Full access to all features"},
-		{"Admin", "Manage users, roles, and permissions"},
-		{"Editor", "Manage users and view data"},
-		{"Viewer", "Read-only access"},
-	}
-
 	resultMap := make(map[string]uint)
 
-	for _, roleData := range roles {
+	for _, roleData := range dtos.RbacRoles {
 		var existing models.Role
 		err := db.Where("name = ?", roleData.Name).First(&existing).Error
 		if err == nil {

@@ -12,9 +12,9 @@ func (e *FieldError) Error() string {
 	return e.Message
 }
 
-// CustomError represents a custom error with HTTP status and message.
 type CustomError struct {
 	Status  int
+	Code    string
 	Message string
 }
 

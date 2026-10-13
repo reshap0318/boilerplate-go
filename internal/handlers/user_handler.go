@@ -32,7 +32,7 @@ func (h *Handlers) UserCreate(c *gin.Context) {
 	helpers.Created(c, "User created successfully", dto)
 }
 
-// UserGetAll handles GET /api/users with optional pagination
+// UserGetAll handles GET /api/users with optional pagination and role filter
 // (page_size omitted or -1 returns all records)
 func (h *Handlers) UserGetAll(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -42,12 +42,22 @@ func (h *Handlers) UserGetAll(c *gin.Context) {
 		page = 1
 	}
 
+	var roleID uint
+	if roleIDQuery := c.Query("role_id"); roleIDQuery != "" {
+		parsed, err := strconv.ParseUint(roleIDQuery, 10, 64)
+		if err != nil {
+			helpers.BadRequest(c, "Invalid role ID")
+			return
+		}
+		roleID = uint(parsed)
+	}
+
 	opts := &repositories.QueryOptions{
 		Page:     page,
 		PageSize: pageSize,
 	}
 
-	result, err := h.svcs.UserGetAll(c.Request.Context(), opts)
+	result, err := h.svcs.UserGetAll(c.Request.Context(), opts, roleID)
 	if helpers.HandleError(c, err, "Failed to fetch users") {
 		return
 	}

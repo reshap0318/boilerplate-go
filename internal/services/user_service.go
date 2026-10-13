@@ -93,7 +93,8 @@ func (s *Services) UserCreate(ctx context.Context, req dtos.UserCreateRequest) (
 }
 
 // UserGetAll returns users with roles, paginated when opts.PageSize > 0, otherwise all records.
-func (s *Services) UserGetAll(ctx context.Context, opts *repositories.QueryOptions) (*repositories.PagedResult[dtos.UserDTO], error) {
+// roleID > 0 filters users by role.
+func (s *Services) UserGetAll(ctx context.Context, opts *repositories.QueryOptions, roleID uint) (*repositories.PagedResult[dtos.UserDTO], error) {
 	if opts == nil {
 		opts = &repositories.QueryOptions{}
 	}
@@ -104,6 +105,20 @@ func (s *Services) UserGetAll(ctx context.Context, opts *repositories.QueryOptio
 		opts.Order = "ASC"
 	}
 	opts.Preloads = []string{"Roles"}
+
+	if roleID > 0 {
+		userIDs, err := s.repo.UserRole.FindUserIDsByRoleID(roleID)
+		if err != nil {
+			return nil, err
+		}
+
+		opts.ConditionGroups = append(opts.ConditionGroups, repositories.ConditionGroup{
+			Logic: "AND",
+			Conditions: []repositories.QueryCondition{
+				{Column: "id", Operator: "IN", Value: userIDs},
+			},
+		})
+	}
 
 	result, err := s.repo.User.FindAllWithOpts(nil, opts)
 	if err != nil {

@@ -5,31 +5,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/reshap0318/go-boilerplate/internal/dtos"
 	"github.com/reshap0318/go-boilerplate/internal/helpers"
 	"github.com/reshap0318/go-boilerplate/internal/repositories"
 )
-
-// PermissionCreate handles POST /api/permissions
-func (h *Handlers) PermissionCreate(c *gin.Context) {
-	var req dtos.PermissionRequest
-	if err := c.BindJSON(&req); err != nil {
-		helpers.BadRequest(c, "Invalid JSON payload")
-		return
-	}
-
-	if err := h.Validate.Struct(req); err != nil {
-		helpers.ValidationResponse(c, h.getErrorsMap(err))
-		return
-	}
-
-	dto, err := h.svcs.PermissionCreate(c.Request.Context(), req)
-	if helpers.HandleError(c, err, "Failed to create permission") {
-		return
-	}
-
-	helpers.Created(c, "Permission created successfully", dto)
-}
 
 // PermissionGetAll handles GET /api/permissions with optional pagination
 // (page_size omitted or -1 returns all records)
@@ -68,47 +46,4 @@ func (h *Handlers) PermissionGetByID(c *gin.Context) {
 	}
 
 	helpers.OK(c, "Permission fetched successfully", dto)
-}
-
-// PermissionUpdate handles PUT /api/permissions/:id
-func (h *Handlers) PermissionUpdate(c *gin.Context) {
-	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		helpers.BadRequest(c, "Invalid permission ID")
-		return
-	}
-
-	var req dtos.PermissionRequest
-	if err := c.BindJSON(&req); err != nil {
-		helpers.BadRequest(c, "Invalid JSON payload")
-		return
-	}
-
-	if err := h.Validate.Struct(req); err != nil {
-		helpers.ValidationResponse(c, h.getErrorsMap(err))
-		return
-	}
-
-	dto, err := h.svcs.PermissionUpdate(c.Request.Context(), uint(id), req)
-	if helpers.HandleError(c, err, "Failed to update permission") {
-		return
-	}
-
-	helpers.OK(c, "Permission updated successfully", dto)
-}
-
-// PermissionDelete handles DELETE /api/permissions/:id
-func (h *Handlers) PermissionDelete(c *gin.Context) {
-	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		helpers.BadRequest(c, "Invalid permission ID")
-		return
-	}
-
-	err = h.svcs.PermissionDelete(c.Request.Context(), uint(id))
-	if helpers.HandleError(c, err, "Failed to delete permission") {
-		return
-	}
-
-	helpers.OK(c, "Permission deleted successfully", nil)
 }
