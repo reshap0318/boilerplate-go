@@ -113,7 +113,7 @@ func (Permission) TableName() string { return "permissions" }
 
 Every model MUST include `DeletedAt gorm.DeletedAt \`gorm:"index" json:"-"\`` — `GenericRepository.Delete()` relies on this field for soft delete via GORM. Without it, `Delete()` performs a hard delete instead.
 
-**Soft delete + UNIQUE:** a plain `UNIQUE (email)` breaks re-creating a value whose row was soft-deleted. GORM hides deleted rows, so the "exists?" check passes, then the INSERT hits the deleted row's key and fails with a 500. For any unique business column on a soft-deleted table, use the `alive` generated column (see `20261124000001_soft_delete_unique_and_indexes.sql`):
+**Soft delete + UNIQUE:** a plain `UNIQUE (email)` breaks re-creating a value whose row was soft-deleted. GORM hides deleted rows, so the "exists?" check passes, then the INSERT hits the deleted row's key and fails with a 500. For any unique business column on a soft-deleted table, use the `alive` generated column (see `20260708000001_create_users_table.sql`):
 
 ```sql
 alive TINYINT(1) GENERATED ALWAYS AS (IF(deleted_at IS NULL, 1, NULL)) VIRTUAL,

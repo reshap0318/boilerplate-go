@@ -72,7 +72,7 @@ Define GORM model with struct tags. See `go-coding-rules` for conventions.
 
 **File:** `cmd/migration/migrations/{timestamp}_{feature}.sql`
 
-Create the SQL migration file for the new table. Index every column the feature will filter, join or sort on (composite in filter-then-sort order). For UNIQUE business columns on a soft-deleted table, use the `alive` generated-column pattern instead of a plain `UNIQUE`; see `go-coding-rules` → "Soft delete + UNIQUE". Timestamp format: `YYYYMMDDHHMMSS` (goose parses the numeric prefix as the version — must be unique and greater than existing migrations). Files are loaded via `//go:embed migrations/*.sql` in `cmd/migration/main.go`, so they MUST live in that exact folder. See `go-coding-rules` for migration conventions.
+Create the SQL migration file for the new table. **One file = one `CREATE TABLE`**, named `{timestamp}_create_{table}_table.sql`, with `DROP TABLE IF EXISTS {table}` as its Down. Put columns, indexes and foreign keys inside the `CREATE TABLE`, not in a separate `ALTER TABLE` file. Order timestamps so parent tables (referenced by a foreign key) come first. Index every column the feature will filter, join or sort on (composite in filter-then-sort order). For UNIQUE business columns on a soft-deleted table, use the `alive` generated-column pattern instead of a plain `UNIQUE`; see `go-coding-rules` → "Soft delete + UNIQUE". Timestamp format: `YYYYMMDDHHMMSS` (goose parses the numeric prefix as the version — must be unique and greater than existing migrations). Files are loaded via `//go:embed migrations/*.sql` in `cmd/migration/main.go`, so they MUST live in that exact folder. See `go-coding-rules` for migration conventions.
 
 ---
 
