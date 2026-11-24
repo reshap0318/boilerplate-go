@@ -1,6 +1,6 @@
 ---
 name: go-development-guide
-description: Step-by-step development workflow and CRUD implementation guide for Go project — from planning to push. Use when creating new features, implementing CRUD operations, adding permission-based access control, or when user mentions models, DTOs, repositories, services, handlers, or routes.
+description: 'Workflow for adding a feature or fixing a bug in this Go/Gin/GORM project — the mandatory process (docs/plan.md → user approval → GitHub issue → branch → PR) and the file-by-file CRUD order (model → migration → DTO → repository → service → handler → route → registration) with a pre-push checklist. Use when starting a new feature, CRUD/endpoint, or bug fix ("buat fitur", "tambah CRUD", "tambah endpoint"). For HOW each file must be written, load go-coding-rules alongside.'
 ---
 
 ## When to use me

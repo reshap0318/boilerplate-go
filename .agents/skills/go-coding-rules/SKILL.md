@@ -1,6 +1,6 @@
 ---
 name: go-coding-rules
-description: Go project coding rules and conventions (Gin + GORM layered architecture) — layer responsibilities (service = logic, repository = query), when to use GenericRepository vs a custom repository query, N+1 prevention with Preload/JOIN, transactions, logging, notification, access control. Use before writing or reviewing any Go code in this project; see references/ for code examples.
+description: 'Mandatory code conventions for this Go/Gin/GORM project — layer responsibilities (handler = HTTP, service = logic, repository = all queries), GenericRepository vs custom query decision guide, N+1 prevention (Preload/JOIN/subquery), errors (CustomError/FieldError instead of new sentinels), transactions, logging, notifications, access control, background work (s.runAsync), compact-code and migration rules. Load whenever writing, modifying or reviewing Go code here, including small edits. For the step order of a new feature, see go-development-guide.'
 ---
 
 ## When to use me

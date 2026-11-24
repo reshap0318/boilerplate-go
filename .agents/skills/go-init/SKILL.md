@@ -1,6 +1,6 @@
 ---
 name: go-init
-description: Initialize a new Go project from the boilerplate template
+description: 'Scaffold a NEW Go backend project from the boilerplate (fullservice monolith with local JWT auth/RBAC/notification, or microservice behind an api-gateway): clones the template, removes its .git and .agents, renames the Go module and import paths, creates .env. Use only when starting a new project/service ("buat project baru", "init dari boilerplate"); never inside an existing project — for adding features use go-development-guide.'
 ---
 
 ## Role
