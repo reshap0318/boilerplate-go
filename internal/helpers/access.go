@@ -7,13 +7,22 @@ import (
 	"time"
 
 	"github.com/reshap0318/go-boilerplate/internal/database"
-	"github.com/reshap0318/go-boilerplate/internal/models"
-	"gorm.io/gorm"
 )
+
+// AccessLoader loads the role names and permission names held by a user.
+// It is implemented by the repository layer (UserRoleRepository.FindAccessNames)
+// and injected by the DI container, so this helper never builds SQL itself.
+type AccessLoader func(userID uint) (roles []string, permissions []string, err error)
+
+// localAccessTTL bounds how long the in-memory fallback cache may serve an entry.
+// The local cache is per-process and cannot be invalidated by other instances,
+// so entries must expire on their own.
+const localAccessTTL = 5 * time.Minute
 
 type userAccessData struct {
 	permissions map[string]bool
 	roles       map[string]bool
+	expiresAt   time.Time
 }
 
 // accessCacheEntry is the JSON shape stored under the shared "session:%d" key.
@@ -30,20 +39,20 @@ type accessCacheEntry struct {
 
 // Access handles permission and role checking.
 // Redis is used exclusively when available; the local in-memory cache is the
-// fallback only while Redis is down. Either way, a miss falls back to the DB.
+// fallback only while Redis is down. Either way, a miss falls back to the loader (DB).
 type Access struct {
-	redis *database.RedisCache
-	db    *gorm.DB
-	mu    sync.RWMutex
-	cache map[uint]*userAccessData
+	redis  *database.RedisCache
+	loader AccessLoader
+	mu     sync.RWMutex
+	cache  map[uint]*userAccessData
 }
 
 // NewAccess creates a new Access instance.
-func NewAccess(redis *database.RedisCache, db *gorm.DB) *Access {
+func NewAccess(redis *database.RedisCache, loader AccessLoader) *Access {
 	return &Access{
-		redis: redis,
-		db:    db,
-		cache: make(map[uint]*userAccessData),
+		redis:  redis,
+		loader: loader,
+		cache:  make(map[uint]*userAccessData),
 	}
 }
 
@@ -56,22 +65,23 @@ func (a *Access) getUserAccess(userID uint) (*userAccessData, bool) {
 	return a.getUserAccessFromLocal(userID)
 }
 
-func (a *Access) getUserAccessFromRedis(userID uint) (*userAccessData, bool) {
-	key := fmt.Sprintf("session:%d", userID)
+func sessionKey(userID uint) string {
+	return fmt.Sprintf("session:%d", userID)
+}
 
+func (a *Access) getUserAccessFromRedis(userID uint) (*userAccessData, bool) {
 	var cached accessCacheEntry
-	if err := a.redis.GetJSON(key, &cached); err == nil {
+	if err := a.redis.GetJSON(sessionKey(userID), &cached); err == nil {
 		return accessDataFromCacheEntry(&cached), true
 	}
 
-	user, err := a.findUserWithRolesPermissions(userID)
+	data, err := a.load(userID)
 	if err != nil {
 		return nil, false
 	}
-	data := a.buildAccessDataFromUser(user)
 
 	ttl := time.Duration(GetEnvInt("JWT_EXPIRATION", 24)) * time.Hour
-	_ = a.redis.SetJSON(key, accessCacheEntryFromData(data), ttl)
+	_ = a.redis.SetJSON(sessionKey(userID), accessCacheEntryFromData(data), ttl)
 
 	return data, true
 }
@@ -80,21 +90,43 @@ func (a *Access) getUserAccessFromLocal(userID uint) (*userAccessData, bool) {
 	a.mu.RLock()
 	data, ok := a.cache[userID]
 	a.mu.RUnlock()
-	if ok {
+	if ok && time.Now().Before(data.expiresAt) {
 		return data, true
 	}
 
-	user, err := a.findUserWithRolesPermissions(userID)
+	data, err := a.load(userID)
 	if err != nil {
 		return nil, false
 	}
-	data = a.buildAccessDataFromUser(user)
+	data.expiresAt = time.Now().Add(localAccessTTL)
 
 	a.mu.Lock()
 	a.cache[userID] = data
 	a.mu.Unlock()
 
 	return data, true
+}
+
+// load fetches role/permission names via the injected loader (one JOIN query).
+func (a *Access) load(userID uint) (*userAccessData, error) {
+	if a.loader == nil {
+		return nil, fmt.Errorf("access loader not configured")
+	}
+	roles, perms, err := a.loader(userID)
+	if err != nil {
+		return nil, err
+	}
+	data := &userAccessData{
+		permissions: make(map[string]bool, len(perms)),
+		roles:       make(map[string]bool, len(roles)),
+	}
+	for _, r := range roles {
+		data.roles[r] = true
+	}
+	for _, p := range perms {
+		data.permissions[p] = true
+	}
+	return data, nil
 }
 
 func accessDataFromCacheEntry(cached *accessCacheEntry) *userAccessData {
@@ -126,28 +158,10 @@ func accessCacheEntryFromData(data *userAccessData) *accessCacheEntry {
 	return entry
 }
 
-// findUserWithRolesPermissions fetches user with roles and permissions from DB.
-func (a *Access) findUserWithRolesPermissions(userID uint) (*models.User, error) {
-	var user models.User
-	err := a.db.Preload("Roles.Permissions").First(&user, userID).Error
-	if err != nil {
-		return nil, err
-	}
-	return &user, nil
-}
-
-func (a *Access) buildAccessDataFromUser(user *models.User) *userAccessData {
-	data := &userAccessData{
-		permissions: make(map[string]bool),
-		roles:       make(map[string]bool),
-	}
-	for _, r := range user.Roles {
-		data.roles[r.Name] = true
-		for _, p := range r.Permissions {
-			data.permissions[p.Name] = true
-		}
-	}
-	return data
+// Warm loads a user's access data into the cache if it is not there yet.
+// AuthValidateToken calls it after a DB fallback so later requests hit the cache.
+func (a *Access) Warm(userID uint) {
+	_, _ = a.getUserAccess(userID)
 }
 
 // HasPermission checks if the caller has ANY of the specified permissions.
@@ -193,7 +207,6 @@ func (a *Access) Invalidate(userID uint) {
 	a.mu.Unlock()
 
 	if a.redis != nil && a.redis.IsCacheAvailable() {
-		key := fmt.Sprintf("session:%d", userID)
-		a.redis.Delete(key)
+		a.redis.Delete(sessionKey(userID))
 	}
 }

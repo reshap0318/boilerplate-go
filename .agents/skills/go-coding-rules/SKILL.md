@@ -1,6 +1,6 @@
 ---
 name: go-coding-rules
-description: Go project coding rules and conventions — see references/ for code examples
+description: Go project coding rules and conventions (Gin + GORM layered architecture) — layer responsibilities (service = logic, repository = query), when to use GenericRepository vs a custom repository query, N+1 prevention with Preload/JOIN, transactions, logging, notification, access control. Use before writing or reviewing any Go code in this project; see references/ for code examples.
 ---
 
 ## When to use me
@@ -20,14 +20,13 @@ Use this skill when:
 
 ## Service Topology
 
-These rules default to the **fullservice** architecture (local auth, Notification, Asynq jobs). Some projects are a **microservice** running behind an api-gateway instead. Before applying Auth/Access, Notification, or Background Jobs sections below, check which topology applies:
+These rules default to the **fullservice** architecture (local auth, Notification). Some projects are a **microservice** running behind an api-gateway instead. Before applying Auth/Access or Notification sections below, check which topology applies:
 
 | Signal | Fullservice | Microservice |
 | ------ | ----------- | ------------ |
 | `internal/middleware/gateway_auth.go` exists | No | Yes |
 | Local `User`/`Role`/`Permission` models + login endpoint | Yes | No — identity comes from api-gateway headers |
 | `internal/models/notification.go` or similar exists | Usually | Only if explicitly added |
-| `cmd/worker/` + `internal/jobs/` exist | Usually | Only if explicitly added |
 
 Sections below marked **"Microservice Variant"** describe the deviation. If a project has neither the models/dirs above, the section is fullservice-only — skip it rather than forcing the pattern in.
 
@@ -51,6 +50,37 @@ Routes → Handlers → Services → Repositories → Database/Redis
 
 All layers use **Dependency Injection** via `internal/di/container.go`.
 
+## Layer Responsibilities (STRICT)
+
+Each layer has ONE job. Putting code in the wrong layer is a rule violation, not a style choice.
+
+| Layer | Does | Never does |
+| ----- | ---- | ---------- |
+| **Handler** | Bind JSON / query params, validate, call ONE service method, map error → response via `HandleError` | Business rules, DB access, calling repositories |
+| **Service** | Business logic: rules, permission/scope decisions, orchestration of repository calls, transactions (`TxManager`), hashing, tokens, cache invalidation, notifications, logging, DTO conversion | Building SQL: no `s.repo.X.DB...`, no `tx.Where/Joins/Raw/Table/Select/Group` |
+| **Repository** | ALL database queries: generic methods + custom methods for JOIN / subquery / aggregate / partial select / bulk update | Business decisions (permission checks, "if role == admin"), logging, notifications, DTOs |
+
+The only gorm call allowed in a service is `tx.Model(&x).Association("Rel").Append/Replace/Clear(...)` for many-to-many writes **inside** a `TxManager` transaction. Everything else that touches the DB goes through a repository method — if no method fits, **add one to the repository**, don't inline the query in the service.
+
+```go
+// WRONG — query built in the service
+func (s *Services) UserGetAll(...) {
+    ids := []uint{}
+    s.repo.User.DB.Table("user_has_roles").Where("role_id = ?", roleID).Pluck("user_id", &ids)
+    ...
+}
+
+// RIGHT — service decides, repository queries
+func (s *Services) UserGetAll(ctx context.Context, opts *repositories.QueryOptions, roleID uint) (...) {
+    if roleID > 0 {
+        result, err = s.repo.User.FindAllByRoleWithOpts(nil, roleID, opts) // subquery lives in the repo
+    } else {
+        result, err = s.repo.User.FindAllWithOpts(nil, opts)
+    }
+    ...
+}
+```
+
 ## Code Examples
 
 All examples are in `references/` folder:
@@ -68,10 +98,12 @@ All examples are in `references/` folder:
 
 ## CRITICAL RULES
 
-### 1. NEVER modify
+### 1. Shared base files — change only on purpose
 
 - `internal/repositories/00_generic.go`
 - `internal/repositories/00_transaction.go`
+
+Every repository depends on these. Do NOT edit them as a side effect of a feature. A change is allowed only as its own explicit task (e.g. "optimize the generic repository"), keeping existing method signatures backward compatible, with `go test ./internal/repositories/` passing. Feature-specific queries go in the feature's repository, never into the generic one.
 
 ### 2. Models MUST have `TableName()` and `DeletedAt` (soft delete)
 
@@ -80,6 +112,31 @@ func (Permission) TableName() string { return "permissions" }
 ```
 
 Every model MUST include `DeletedAt gorm.DeletedAt \`gorm:"index" json:"-"\`` — `GenericRepository.Delete()` relies on this field for soft delete via GORM. Without it, `Delete()` performs a hard delete instead.
+
+**Soft delete + UNIQUE:** a plain `UNIQUE (email)` breaks re-creating a value whose row was soft-deleted. GORM hides deleted rows, so the "exists?" check passes, then the INSERT hits the deleted row's key and fails with a 500. For any unique business column on a soft-deleted table, use the `alive` generated column (see `20261124000001_soft_delete_unique_and_indexes.sql`):
+
+```sql
+alive TINYINT(1) GENERATED ALWAYS AS (IF(deleted_at IS NULL, 1, NULL)) VIRTUAL,
+UNIQUE INDEX uq_{table}_{column}_alive ({column}, alive)
+```
+
+In the service, keep the friendly pre-check (`ExistsWithMap`) AND wrap the transaction error with `duplicateAsFieldError(err, "field", "message")`. That turns `gorm.ErrDuplicatedKey` (from a concurrent insert) into a 422 instead of a 500.
+
+### 2b. Keep code compact — no needless splitting
+
+First ask: **is this a general utility, or a step of one specific feature?**
+
+| Kind | Example | Rule |
+| ---- | ------- | ---- |
+| **General utility**: domain-agnostic, input → output, makes sense outside this feature | parse/format a date, read an env int, hash a token, build a pagination meta, apply preloads | Keep it a named function in the right shared place (`internal/helpers/`, or the package's shared file) **even if it is used only once today** |
+| **Feature-specific step**: only meaningful inside one flow | "clear expired buckets of this limiter", "wrap this one repo call", "build this service's notification payload" | Used in one place → write it inline. Extract only when a 2nd caller appears |
+
+- Before writing a general utility, search `internal/helpers/` first and reuse what exists. Don't create a second `GetEnvInt`.
+- Recursive functions and exported APIs another layer must call are always their own function.
+- Extract a feature-specific helper only when it is used in **2+ places** or removes real duplication (e.g. `duplicateAsFieldError`, `issueTokens`).
+- Two near-identical functions that differ by one value → ONE function with a parameter (e.g. `GenerateToken(..., tokenType, ...)`, not `GenerateToken` + `GenerateRefreshToken`).
+- No one-line wrappers that only forward to another method. Call the target directly.
+- Delete code nobody calls. Don't keep "might be useful later" methods.
 
 ### 3. Single Struct Pattern
 
@@ -280,21 +337,48 @@ opts := &repositories.QueryOptions{
 }
 ```
 
-### Priority: Use Generic Methods First
+`SortBy` and `QueryCondition.Column` are concatenated into SQL, so the generic layer validates them (`column` / `table.column` only) and whitelists `Operator` (`=, !=, <>, <, <=, >, >=, LIKE, NOT LIKE, ILIKE, IN, NOT IN`). Anything else returns `repositories.ErrInvalidQueryOption`. If a sort/filter column comes from a query param, the **service** must still map it from an allow-list (`map[string]string{"name": "users.name"}`) — never pass user input through as-is.
 
-**Prefer** using existing `GenericRepository` methods over creating custom repository methods.
+### Generic vs Custom Query — Decision Guide (MANDATORY)
 
-**Guidelines:**
+Go down the list and stop at the first match:
 
-1. Check if generic method can solve the problem first (see table above)
-2. Create custom method when generic methods cannot handle the requirement
-3. Common scenarios that may need custom methods:
-   - Complex JOIN queries
-   - Aggregate functions (SUM, COUNT with GROUP BY)
-   - Subqueries or nested conditions
-   - Database-specific features not covered by generic methods
+| # | Need | Use |
+| - | ---- | --- |
+| 1 | One row by id (+ relations) | `FindByID(nil, id, "Rel")` / `FindByIDWithOpts` |
+| 2 | Rows of ONE table filtered by equality (`col = value`, incl. zero values) | `FindByFieldMap` / `ExistsWithMap` |
+| 3 | List page: sort + WHERE with `= != < > LIKE IN` on this table's columns + relations to render | `FindAllWithOpts` + `QueryOptions` |
+| 4 | Filter/sort by **another table's** column (JOIN), subquery, `EXISTS`, `IS NULL`, `GROUP BY`/aggregate, `DISTINCT`, only some columns, bulk update/delete with a non-id WHERE | **Custom repository method** |
+| 5 | #4 but paginated | Custom method that builds the base query and returns `r.findPaged(base, opts)` |
 
-See `references/repository.go` for examples.
+Rules:
+
+- **Don't** write a custom method for something rows 1–3 already do (e.g. `FindByName` = `FindByFieldMap`).
+- **Don't** force a generic method where it does not fit. For example, don't load all rows and filter in Go, or call `FindByID` in a loop. That is the case for a custom method.
+- **Don't** re-implement pagination (COUNT/LIMIT/OFFSET/TotalPages) in a custom method. Use `findPaged`.
+- Custom methods use `r.getDB(tx).Model(&models.X{})...` so they join transactions and keep the soft-delete scope. A raw `Table("x")` skips `deleted_at IS NULL`, so add that condition yourself for soft-deleted tables.
+- Name custom methods after what they return: `FindAllByRoleWithOpts`, `FindAccessNames`, `CountPerRole`.
+
+See `references/repository.go` for one example per case.
+
+### Query Performance & N+1 (MANDATORY)
+
+An N+1 is one query for a list, then one more query **per row**. It is forbidden.
+
+| Situation | Do | Don't |
+| --------- | -- | ----- |
+| Response shows a has-many / many-to-many relation | `Preloads: []string{"Roles"}`: 1 extra query per relation level | Loop over rows calling `FindByID`/`FindRolesByUserID` |
+| Filter or sort by a belongs-to column (`satker.code`) | Custom method with `Joins(...)` | Preload then filter in Go |
+| Need data for a set of ids | One query `Where("id IN ?", ids)`, then map in Go | One query per id |
+| Only names/ids needed (checks, dropdowns) | Custom method with `Select("a, b")` + `Scan` into a small struct | `Preload("Roles.Permissions")` of full rows |
+| Filter by membership (users with role X) | Subquery: `Where("users.id IN (?)", sub)` | `Pluck` all ids, then `IN (...)` with thousands of values |
+| Existence check | `ExistsWithMap` (`SELECT 1 ... LIMIT 1`) | `Count` / `FindAll` + `len()` |
+
+Also:
+
+- Preload **only** what the response renders. Nested preloads (`A.B.C`) on list endpoints multiply rows fast.
+- Every column used in `WHERE`/`ORDER BY`/`JOIN` on a growing table needs an index in the migration. Use a composite index in filter-then-sort order, e.g. `(user_id, deleted_at, created_at)`.
+- `PageSize < 0` (no pagination) is only for small, bounded tables (permissions, roles). Never use it for users, notifications or transactions.
 
 ### Transaction Manager
 
@@ -307,9 +391,32 @@ result, err := s.repo.TxManager.WithinTransactionWithResult(func(tx *gorm.DB) (i
 
 ## Helpers
 
-### Error Sentinels
+### Which error to return (MANDATORY)
 
-See `internal/helpers/error_helper.go` for the authoritative, up-to-date list of sentinel errors — do not hardcode a copy here, it will go stale. Reuse an existing sentinel before adding a new one.
+Pick the first one that fits:
+
+| Case | Return | HTTP |
+| ---- | ------ | ---- |
+| Problem with one input field (duplicate email, invalid reference id, value not allowed) | `&helpers.FieldError{Field: "email", Message: "user already exists"}` | 422 |
+| Any other business-rule failure (wrong state, limit reached, conflict, feature-specific message) | `&helpers.CustomError{Status: http.StatusConflict, Message: "..."}` | the `Status` you set (default 400) |
+| Record not found / forbidden / auth-token failures | existing sentinels: `helpers.ErrNotFound`, `helpers.ErrForbidden`, `helpers.ErrInvalidToken`, ... | 404 / 403 / 401 |
+
+**Do NOT add new entries to the "Common application errors" `var (...)` block in `error_helper.go`.** That list is only for generic, cross-feature conditions that `HandleError` maps to a status. A feature-specific error such as `ErrRoleInUse`, `ErrInvoiceAlreadyPaid` or `ErrStockNotEnough` must be a `CustomError` or `FieldError` returned from the service. `HandleError` renders both automatically, with no switch case and no handler change. A new sentinel that `HandleError` does not know falls through to **500**.
+
+```go
+// WRONG — feature-specific sentinel added to error_helper.go
+var ErrRoleInUse = errors.New("role is still assigned to users")
+
+// RIGHT — returned from the service, rendered by HandleError
+return &helpers.CustomError{Status: http.StatusConflict, Message: "role is still assigned to users"}
+
+// RIGHT — tied to an input field
+return &helpers.FieldError{Field: "permissions", Message: "permission 42 does not exist"}
+```
+
+Return them **unwrapped**. `HandleError` uses a type assertion, so `fmt.Errorf("...: %w", fieldErr)` becomes a 500.
+
+See `internal/helpers/error_helper.go` for the existing sentinels; do not copy the list here, it would go stale.
 
 ### Custom Error — `CustomError`
 
@@ -399,12 +506,18 @@ if s.RedisClient.IsCacheAvailable() {
 
 ```go
 s.EmailClient.IsConfigured()
-s.EmailClient.SendResetPasswordEmail(email, token, resetURL)
+
+// Sending email must not block the response — run it with s.runAsync (see "Background Work")
+s.runAsync("AuthForgetPassword.sendEmail", func() {
+    if err := s.EmailClient.SendResetPasswordEmail(email, token, resetURL); err != nil {
+        s.Logger.LogError("AuthForgetPassword", "Failed to send reset email: %v", err)
+    }
+})
 ```
 
 ### Access — `s.Access` (Permission/Role)
 
-**Fullservice:** 3-tier cache: L1 (in-memory) → L2 (Redis) → L3 (DB), backed by local `User`/`Role`/`Permission` tables.
+**Fullservice:** Redis when available, otherwise an in-memory cache (5 min TTL), then the DB. The DB load is ONE JOIN query, `UserRoleRepository.FindAccessNames`, injected into `helpers.NewAccess` by the DI container. `helpers` never builds SQL itself.
 
 ```go
 s.Access.HasPermission(ctx, "user.delete")  // Check ANY permission
@@ -503,54 +616,21 @@ Don't assume every field above exists — check `internal/services/00_services.g
 
 ---
 
-## Background Jobs (Asynq)
+## Background Work
 
-**Microservice Variant:** skip this whole section if the project has no `cmd/worker/` and `internal/jobs/` — not every microservice needs an async job runner. Don't scaffold one just to satisfy this rule.
+There is **no job queue** in this project (Asynq was removed). Two patterns only:
 
-Worker runs as a separate binary: `cmd/worker/main.go`. Uses Redis via `internal/pkg/asynq/client.go`.
+| Need | Use |
+| ---- | --- |
+| Fire-and-forget after a request (send email, warm a cache) | `s.runAsync("Func.step", func() { ... })` |
+| Periodic maintenance (clean `storage/tmp`) | Standalone CLI in `cmd/{name}/main.go` (e.g. `cmd/cleartmp`), scheduled by OS cron / Task Scheduler / k8s CronJob |
 
-See `references/job.go` for full code examples.
+`s.runAsync` (in `internal/services/00_services.go`) starts a goroutine with `recover()` and logs any panic. Rules:
 
-### Architecture
-
-```
-Scheduler (cron) → Redis Queue → Server (worker) → Jobs.HandleXxx()
-```
-
-### File Structure
-
-| File | Purpose |
-| ---- | ------- |
-| `internal/jobs/00_jobs.go` | `Jobs` struct, type constants, `Register()` |
-| `internal/jobs/{feature}_job.go` | Handler for one job |
-| `internal/pkg/asynq/client.go` | `RedisOpt()` — shared Redis config |
-| `cmd/worker/main.go` | Entry point: server + scheduler |
-
-### Adding a New Job — 3 Steps
-
-1. Add type constant + `mux.HandleFunc` in `00_jobs.go`
-2. Create `internal/jobs/{feature}_job.go` with `func (j *Jobs) Handle{Feature}(...)`
-3. Register cron in `cmd/worker/main.go` with `scheduler.Register(...)`
-
-All 3 steps MUST be done together.
-
-### CRITICAL RULES
-
-- Type constant defined in `00_jobs.go` — NEVER inline the string
-- Handler MUST be registered in `Register()` — missing handler causes runtime error
-- Scheduler cron and mux handler MUST be added together — one without the other causes silent failures
-- Jobs have full access to `j.svcs` (Services) — use it for DB, Redis, logging, etc.
-- Job errors: log with `LogEndWithError`, return wrapped error with `fmt.Errorf`
-- File naming: `{feature}_job.go`, handler: `Handle{Feature}`
-
-### Anti-Patterns
-
-| WRONG | CORRECT |
-| ----- | ------- |
-| `mux.HandleFunc("myjob", ...)` | `mux.HandleFunc(jobs.TypeMyJob, ...)` |
-| Schedule without registering handler | Always add both in same step |
-| Register handler without schedule | Always add both in same step |
-| `type MyJobService struct` | Method on `(j *Jobs)` |
+- NEVER write a bare `go func() { ... }()` in a service. A panic in it kills the whole API process. Always use `s.runAsync`.
+- The closure must not use the request `ctx` (it is cancelled when the response is sent) or a `tx` (already committed or rolled back). Copy the values you need into local variables first.
+- Work done this way has no retry and is lost if the process restarts. Only use it where that is acceptable (notification email, cache warm-up). Anything that must happen belongs in the DB transaction itself.
+- Log success/failure inside the closure with `s.Logger`.
 
 ---
 
@@ -565,6 +645,16 @@ All 3 steps MUST be done together.
 | `c.ShouldBindJSON(&req)`                        | `c.BindJSON(&req)` + `h.Validate.Struct(&req)`        |
 | `helpers.BadRequest(c, "msg")` for field errors | `helpers.ValidationError(c, "field", "msg")` |
 | Manual error check `if err == helpers.ErrX`     | `helpers.HandleError(c, err, "fallback")`            |
+| New feature sentinel `var ErrXxx = errors.New(...)` in `error_helper.go` | `&helpers.CustomError{Status: ..., Message: ...}` / `&helpers.FieldError{...}` |
+| `s.repo.User.DB.Where(...)` / `tx.Joins(...)` in a service | Custom repository method |
+| Repository method that checks permissions / logs / builds DTOs | Keep it in the service |
+| Calling a repository inside a `for` loop over rows (N+1) | `Preloads`, `JOIN`, or one `IN ?` query |
+| `Preload("A.B")` just to read names / check membership | Custom method with `Select` + `JOIN` |
+| Custom method re-implementing COUNT + LIMIT/OFFSET | `r.findPaged(baseQuery, opts)` |
+| Custom method duplicating `FindByFieldMap` (`WHERE col = ?`) | Use the generic method |
+| Pluck ids then `IN (ids...)` | Subquery `Where("x.id IN (?)", sub)` |
+| Bare `go func()` in a service | `s.runAsync("Name", func() {...})` |
+| `UNIQUE (col)` on a soft-deleted table | `UNIQUE (col, alive)` generated column |
 
 ---
 
@@ -581,16 +671,13 @@ All 3 steps MUST be done together.
 - [ ] CREATE/UPDATE/DELETE have logging (+ notification, only if the project has a notification system — see Notification section)
 - [ ] Notification Data = identifier only (id, name, status) — if applicable
 - [ ] Repository registered in `00_repository.go`
-- [ ] Custom repo method: prefer generic methods if they can handle the requirement
+- [ ] Service has no gorm query code (only repository calls + `Association` inside tx)
+- [ ] Generic vs custom chosen with the Decision Guide; paginated custom queries use `findPaged`
+- [ ] No repository call inside a loop (N+1); relations via `Preloads` or JOIN
+- [ ] New WHERE/ORDER BY columns on growing tables have an index in the migration
+- [ ] Unique columns on soft-deleted tables use the `alive` pattern + `duplicateAsFieldError`
+- [ ] Feature errors are `CustomError`/`FieldError`, NOT new sentinels in `error_helper.go`
+- [ ] Async work uses `s.runAsync`, no bare `go func()`
 - [ ] Handler uses `c.BindJSON()` + `h.Validate.Struct()`
 - [ ] ALL errors handled via `HandleError()`, NO manual error checks
-- [ ] Build: `go build ./...` | Vet: `go vet ./...`
-
-### Adding a Job (extra checks)
-
-- [ ] Type constant added in `00_jobs.go`
-- [ ] Handler registered in `Register()` in `00_jobs.go`
-- [ ] Cron schedule added in `cmd/worker/main.go`
-- [ ] Handler file named `{feature}_job.go`
-- [ ] Handler uses `j.svcs.Logger` for start/end logging
-- [ ] All 3 steps done together (constant + handler + schedule)
+- [ ] Build: `go build ./...` | Vet: `go vet ./...` | Test: `go test ./...`

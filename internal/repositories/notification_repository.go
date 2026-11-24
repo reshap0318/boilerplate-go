@@ -36,7 +36,7 @@ func (r *NotificationRepository) FindByUserIDWithOpts(userID uint, opts *QueryOp
 		}
 	}
 
-	return r.FindByUserIDWithOptsCustom(query, opts)
+	return r.findPaged(query.Model(&models.Notification{}), opts)
 }
 
 func (r *NotificationRepository) FindByUserIDAndFilters(userID uint, opts *QueryOptions, isRead *bool, notifType string) (*PagedResult[models.Notification], error) {
@@ -55,71 +55,32 @@ func (r *NotificationRepository) FindByUserIDAndFilters(userID uint, opts *Query
 		query = query.Where("type = ?", notifType)
 	}
 
-	return r.FindByUserIDWithOptsCustom(query, opts)
-}
-
-func (r *NotificationRepository) FindByUserIDWithOptsCustom(query *gorm.DB, opts *QueryOptions) (*PagedResult[models.Notification], error) {
-	var instance *models.Notification
-	query = r.applyOptions(query, opts)
-
-	var total int64
-	if err := query.Model(&instance).Count(&total).Error; err != nil {
-		return nil, err
+	// Notifications are unbounded per user — a negative page size falls back to
+	// the default instead of meaning "return everything".
+	if opts != nil && opts.PageSize < 0 {
+		opts.PageSize = 10
 	}
-
-	page := 1
-	pageSize := 10
-	if opts != nil {
-		if opts.Page > 0 {
-			page = opts.Page
-		}
-		if opts.PageSize > 0 {
-			pageSize = opts.PageSize
-		}
-	}
-
-	if pageSize > 0 {
-		offset := (page - 1) * pageSize
-		query = query.Limit(pageSize).Offset(offset)
-	}
-
-	datas := []models.Notification{}
-	if err := query.Find(&datas).Error; err != nil {
-		return nil, err
-	}
-
-	totalPages := int(total) / pageSize
-	if int(total)%pageSize != 0 {
-		totalPages++
-	}
-
-	return &PagedResult[models.Notification]{
-		Data:       datas,
-		Total:      total,
-		Page:       page,
-		PageSize:   pageSize,
-		TotalPages: totalPages,
-	}, nil
+	return r.findPaged(query.Model(&models.Notification{}), opts)
 }
 
 func (r *NotificationRepository) MarkAsRead(notificationID, userID uint) error {
 	now := time.Now()
 	return r.DB.Model(&models.Notification{}).
-		Where("id = ? AND user_id = ? AND deleted_at IS NULL", notificationID, userID).
+		Where("id = ? AND user_id = ?", notificationID, userID).
 		Update("read_at", now).Error
 }
 
 func (r *NotificationRepository) MarkAllAsRead(userID uint) error {
 	now := time.Now()
 	return r.DB.Model(&models.Notification{}).
-		Where("user_id = ? AND read_at IS NULL AND deleted_at IS NULL", userID).
+		Where("user_id = ? AND read_at IS NULL", userID).
 		Update("read_at", now).Error
 }
 
 func (r *NotificationRepository) CountUnread(userID uint) (int64, error) {
 	var count int64
 	err := r.DB.Model(&models.Notification{}).
-		Where("user_id = ? AND read_at IS NULL AND deleted_at IS NULL", userID).
+		Where("user_id = ? AND read_at IS NULL", userID).
 		Count(&count).Error
 	return count, err
 }

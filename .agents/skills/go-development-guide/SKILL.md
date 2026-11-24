@@ -72,7 +72,7 @@ Define GORM model with struct tags. See `go-coding-rules` for conventions.
 
 **File:** `cmd/migration/migrations/{timestamp}_{feature}.sql`
 
-Create the SQL migration file for the new table. Timestamp format: `YYYYMMDDHHMMSS` (goose parses the numeric prefix as the version — must be unique and greater than existing migrations). Files are loaded via `//go:embed migrations/*.sql` in `cmd/migration/main.go`, so they MUST live in that exact folder. See `go-coding-rules` for migration conventions.
+Create the SQL migration file for the new table. Index every column the feature will filter, join or sort on (composite in filter-then-sort order). For UNIQUE business columns on a soft-deleted table, use the `alive` generated-column pattern instead of a plain `UNIQUE`; see `go-coding-rules` → "Soft delete + UNIQUE". Timestamp format: `YYYYMMDDHHMMSS` (goose parses the numeric prefix as the version — must be unique and greater than existing migrations). Files are loaded via `//go:embed migrations/*.sql` in `cmd/migration/main.go`, so they MUST live in that exact folder. See `go-coding-rules` for migration conventions.
 
 ---
 
@@ -88,7 +88,10 @@ Create Request struct, Response DTO, and converter functions (`To{Feature}DTO`, 
 
 **File:** `internal/repositories/{feature}_repository.go`
 
-Extend `GenericRepository[Model]`. Only add custom methods for complex queries. See `go-coding-rules` for conventions.
+Extend `GenericRepository[Model]`. Decide per query with `go-coding-rules` → "Generic vs Custom Query — Decision Guide":
+- Equality filter / list with sort + simple WHERE / by id → generic method, no custom code.
+- JOIN, subquery, aggregate, partial columns, `IS NULL`, bulk update → custom method **in this file**, paginated ones via `r.findPaged(base, opts)`.
+- Plan the relations the response renders now (`Preloads`/JOIN), so the service never queries inside a loop (N+1).
 
 ---
 
@@ -104,7 +107,7 @@ Add repository field to `Repositories` struct and initialize in `NewRepositories
 
 **File:** `internal/services/{feature}_service.go`
 
-Implement CRUD methods on `(s *Services)`. Write ops use transaction. Notification (if the project has one — see `go-coding-rules` "Service Topology") created **after** transaction completes. Read ops return DTOs. See `go-coding-rules` for full patterns.
+Implement CRUD methods on `(s *Services)`. The service holds the logic and calls repository methods; it contains **no query code**. If you need a query that no repository method provides, go back to Step 4 and add it there. Feature errors are `helpers.CustomError` / `helpers.FieldError`, not new sentinels in `error_helper.go`. Write ops use transaction. Notification (if the project has one — see `go-coding-rules` "Service Topology") created **after** transaction completes. Read ops return DTOs. See `go-coding-rules` for full patterns.
 
 ---
 
@@ -141,9 +144,14 @@ Add the new route registration call inside `RegisterAll()`. `cmd/api/main.go` ne
 - [ ] Handler functions use feature prefix (`{Feature}{Action}`)
 - [ ] Write operations use `TxManager.WithinTransaction()` or `WithinTransactionWithResult()`
 - [ ] Read operations use `nil` (NOT `.DB`)
+- [ ] Service contains no gorm query code; custom queries live in the repository
+- [ ] No N+1: no repository call inside a loop; relations via `Preloads` or JOIN
+- [ ] New filter/sort columns are indexed in the migration
+- [ ] Errors use `CustomError`/`FieldError` (no new sentinel in `error_helper.go`)
 - [ ] Logging on Create/Update/Delete
 - [ ] Notification created **after** transaction completes for Create/Update/Delete — only if the project has a notification system (skip for services without one, e.g. most microservices behind an api-gateway)
 - [ ] Repository registered in `00_repository.go`
 - [ ] Routes registered in `internal/routes/00_route.go`
 - [ ] Build success (`go build ./...`)
 - [ ] Vet clean (`go vet ./...`)
+- [ ] Tests pass (`go test ./...`)

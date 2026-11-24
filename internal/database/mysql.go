@@ -3,8 +3,6 @@ package database
 import (
 	"fmt"
 	"log"
-	"os"
-	"strconv"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -29,31 +27,14 @@ func NewMySQL(cfg MySQLConfig) (*gorm.DB, error) {
 		cfg.DBName,
 	)
 
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
-		Logger: gormLogger,
-	})
+	db, err := gorm.Open(mysql.Open(dsn), gormConfig())
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MySQL: %w", err)
 	}
 
 	log.Println("MySQL connection established")
 
-	sqlDB, err := db.DB()
-	if err == nil {
-		maxOpenStr := os.Getenv("DB_MAX_OPEN_CONNS")
-		if maxOpenStr == "" {
-			maxOpenStr = "25"
-		}
-		maxIdleStr := os.Getenv("DB_MAX_IDLE_CONNS")
-		if maxIdleStr == "" {
-			maxIdleStr = "10"
-		}
-		maxOpen, _ := strconv.Atoi(maxOpenStr)
-		maxIdle, _ := strconv.Atoi(maxIdleStr)
-		sqlDB.SetMaxOpenConns(maxOpen)
-		sqlDB.SetMaxIdleConns(maxIdle)
-		log.Printf("MySQL connection pool: max_open=%d, max_idle=%d", maxOpen, maxIdle)
-	}
+	configurePool(db, "MySQL")
 
 	return db, nil
 }

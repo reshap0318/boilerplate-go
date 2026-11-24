@@ -75,18 +75,28 @@ func (h *Handlers) AuthRefreshToken(c *gin.Context) {
 
 // AuthLogout handles user logout.
 // @Summary User logout
-// @Description Blacklists the current token so it cannot be reused
+// @Description Blacklists the current access token (and the refresh token, if sent in the body) so they cannot be reused
 // @Tags auth
+// @Accept json
 // @Produce json
+// @Param request body dtos.LogoutRequest false "Optional refresh token to revoke"
 // @Security BearerAuth
 // @Success 200 {object} map[string]string
 // @Router /api/auth/logout [post]
 func (h *Handlers) AuthLogout(c *gin.Context) {
 	authHeader := c.GetHeader("Authorization")
 	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 {
+		helpers.Unauthorized(c, "Invalid authorization header format")
+		return
+	}
 	tokenString := parts[1]
 
-	if err := h.svcs.AuthLogout(c.Request.Context(), tokenString); err != nil {
+	// Optional body: {"refresh_token": "..."} — revokes the refresh token too.
+	var req dtos.LogoutRequest
+	_ = c.ShouldBindJSON(&req)
+
+	if err := h.svcs.AuthLogout(c.Request.Context(), tokenString, req.RefreshToken); err != nil {
 		if helpers.HandleError(c, err, "Logout failed") {
 			return
 		}
@@ -104,7 +114,6 @@ func (h *Handlers) AuthLogout(c *gin.Context) {
 // @Param request body dtos.ForgetPasswordRequest true "Email"
 // @Success 200 {object} dtos.MessageResponse
 // @Failure 400 {object} map[string]string
-// @Failure 404 {object} map[string]string
 // @Router /api/auth/forgot-password [post]
 func (h *Handlers) AuthForgetPassword(c *gin.Context) {
 	var req dtos.ForgetPasswordRequest

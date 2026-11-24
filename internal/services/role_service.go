@@ -34,8 +34,10 @@ func (s *Services) RoleCreate(ctx context.Context, req dtos.RoleRequest) (*dtos.
 		for _, permID := range req.Permissions {
 			perms = append(perms, models.Permission{ID: permID})
 		}
-		if err := tx.Model(&result).Association("Permissions").Append(perms); err != nil {
-			s.Logger.LogStep("RoleCreate", "Failed to assign permissions: %v", err)
+		if len(perms) > 0 {
+			if err := tx.Model(&result).Association("Permissions").Append(perms); err != nil {
+				return nil, fmt.Errorf("failed to assign permissions: %w", err)
+			}
 		}
 
 		// Reload role with permissions
@@ -48,7 +50,7 @@ func (s *Services) RoleCreate(ctx context.Context, req dtos.RoleRequest) (*dtos.
 	})
 	if err != nil {
 		s.Logger.LogEndWithError("RoleCreate", "Failed to create role: %v", err)
-		return nil, err
+		return nil, duplicateAsFieldError(err, "name", "role already exists")
 	}
 
 	result = res.(*models.Role)
@@ -156,8 +158,10 @@ func (s *Services) RoleUpdate(ctx context.Context, id uint, req dtos.RoleRequest
 		for _, permID := range req.Permissions {
 			perms = append(perms, models.Permission{ID: permID})
 		}
-		if err := tx.Model(&result).Association("Permissions").Append(perms); err != nil {
-			s.Logger.LogStep("RoleUpdate", "Failed to assign permissions: %v", err)
+		if len(perms) > 0 {
+			if err := tx.Model(&result).Association("Permissions").Append(perms); err != nil {
+				return nil, fmt.Errorf("failed to assign permissions: %w", err)
+			}
 		}
 
 		// Reload role with permissions
@@ -170,7 +174,7 @@ func (s *Services) RoleUpdate(ctx context.Context, id uint, req dtos.RoleRequest
 	})
 	if err != nil {
 		s.Logger.LogEndWithError("RoleUpdate", "Failed to update role: %v", err)
-		return nil, err
+		return nil, duplicateAsFieldError(err, "name", "role already exists")
 	}
 
 	result = res.(*models.Role)
@@ -187,7 +191,7 @@ func (s *Services) RoleUpdate(ctx context.Context, id uint, req dtos.RoleRequest
 		},
 	})
 
-	go s.invalidateAccessForRole(id)
+	s.runAsync("invalidateAccessForRole", func() { s.invalidateAccessForRole(id) })
 
 	s.Logger.LogEnd("RoleUpdate", "Role updated: %s (ID: %d)", dto.Name, dto.ID)
 	return &dto, nil
@@ -223,7 +227,7 @@ func (s *Services) RoleDelete(ctx context.Context, id uint) error {
 		},
 	})
 
-	go s.invalidateAccessForRole(id)
+	s.runAsync("invalidateAccessForRole", func() { s.invalidateAccessForRole(id) })
 
 	s.Logger.LogEnd("RoleDelete", "Role deleted: ID: %d", id)
 	return nil

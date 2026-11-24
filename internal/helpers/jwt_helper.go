@@ -13,10 +13,18 @@ import (
 	"github.com/google/uuid"
 )
 
+// Token types stored in the "typ" claim. Access and refresh tokens are signed
+// with the same key, so the type claim is what keeps them from being swapped.
+const (
+	TokenTypeAccess  = "access"
+	TokenTypeRefresh = "refresh"
+)
+
 // JWTClaims represents custom claims for JWT tokens
 type JWTClaims struct {
-	UserID uint   `json:"user_id"`
-	Email  string `json:"email"`
+	UserID    uint   `json:"user_id"`
+	Email     string `json:"email"`
+	TokenType string `json:"typ"`
 	jwt.RegisteredClaims
 }
 
@@ -66,12 +74,14 @@ func LoadPublicKey(path string) (*rsa.PublicKey, error) {
 	return publicKey, nil
 }
 
-// GenerateToken creates a new JWT access token with RS256
-func GenerateToken(userID uint, email string, privateKey *rsa.PrivateKey, kid string, expirationHours int) (string, error) {
+// GenerateToken creates a signed RS256 JWT. tokenType is TokenTypeAccess or
+// TokenTypeRefresh; it is stored in the "typ" claim so the two can't be swapped.
+func GenerateToken(userID uint, email, tokenType string, privateKey *rsa.PrivateKey, kid string, expirationHours int) (string, error) {
 	now := time.Now()
 	claims := &JWTClaims{
-		UserID: userID,
-		Email:  email,
+		UserID:    userID,
+		Email:     email,
+		TokenType: tokenType,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        uuid.New().String(),
 			ExpiresAt: jwt.NewNumericDate(now.Add(time.Duration(expirationHours) * time.Hour)),
@@ -83,36 +93,9 @@ func GenerateToken(userID uint, email string, privateKey *rsa.PrivateKey, kid st
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	token.Header["kid"] = kid
 
-	// Sign token with private key
 	tokenString, err := token.SignedString(privateKey)
 	if err != nil {
-		return "", fmt.Errorf("failed to sign token: %w", err)
-	}
-
-	return tokenString, nil
-}
-
-// GenerateRefreshToken creates a new JWT refresh token with RS256
-func GenerateRefreshToken(userID uint, email string, privateKey *rsa.PrivateKey, kid string, expirationHours int) (string, error) {
-	now := time.Now()
-	claims := &JWTClaims{
-		UserID: userID,
-		Email:  email,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ID:        uuid.New().String(),
-			ExpiresAt: jwt.NewNumericDate(now.Add(time.Duration(expirationHours) * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(now),
-			NotBefore: jwt.NewNumericDate(now),
-		},
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	token.Header["kid"] = kid
-
-	// Sign token with private key
-	tokenString, err := token.SignedString(privateKey)
-	if err != nil {
-		return "", fmt.Errorf("failed to sign refresh token: %w", err)
+		return "", fmt.Errorf("failed to sign %s token: %w", tokenType, err)
 	}
 
 	return tokenString, nil

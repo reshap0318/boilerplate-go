@@ -20,6 +20,12 @@ type RefreshTokenRequest struct {
 	RefreshToken string `json:"refresh_token" validate:"required"`
 }
 
+// LogoutRequest is the optional logout payload. When RefreshToken is set, it is
+// revoked together with the access token from the Authorization header.
+type LogoutRequest struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
 // RegisterRequest represents the register request payload.
 type RegisterRequest struct {
 	Email    string `json:"email" validate:"required,email"`

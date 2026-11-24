@@ -35,11 +35,37 @@ type RateLimiter struct {
 	buckets    sync.Map // map[string]*bucket
 }
 
-// NewRateLimiter creates a new rate limiter
+// NewRateLimiter creates a new rate limiter and starts a background sweeper that
+// removes buckets idle for more than one window, so memory does not grow with
+// every distinct IP ever seen.
 func NewRateLimiter(limit, windowSecs int) *RateLimiter {
-	return &RateLimiter{
+	rl := &RateLimiter{
 		limit:      limit,
 		windowSecs: windowSecs,
+	}
+	go rl.sweep()
+	return rl
+}
+
+// sweep periodically deletes buckets whose window has ended.
+func (rl *RateLimiter) sweep() {
+	window := time.Duration(rl.windowSecs) * time.Second
+	if window <= 0 {
+		return
+	}
+	ticker := time.NewTicker(window)
+	defer ticker.Stop()
+	for now := range ticker.C {
+		rl.buckets.Range(func(key, value any) bool {
+			b := value.(*bucket)
+			b.mu.Lock()
+			expired := now.Sub(b.lastRefill) >= window
+			b.mu.Unlock()
+			if expired {
+				rl.buckets.Delete(key)
+			}
+			return true
+		})
 	}
 }
 

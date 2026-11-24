@@ -14,6 +14,9 @@ import (
 )
 
 type NotificationCreateParams struct {
+	// UserID is the recipient. When 0, the caller from ctx is used. Public
+	// endpoints (no caller in ctx) must set it explicitly.
+	UserID  uint
 	Type    string
 	Title   string
 	Message string
@@ -21,7 +24,15 @@ type NotificationCreateParams struct {
 }
 
 func (s *Services) NotificationCreate(ctx context.Context, params *NotificationCreateParams) error {
-	userID := helpers.GetCallerID(ctx)
+	userID := params.UserID
+	if userID == 0 {
+		userID = helpers.GetCallerID(ctx)
+	}
+	if userID == 0 {
+		// No recipient (public endpoint without explicit UserID): inserting would
+		// violate the notifications.user_id foreign key, so skip it.
+		return nil
+	}
 
 	var dataJSON string
 	if params.Data != nil {
