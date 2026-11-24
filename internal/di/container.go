@@ -160,7 +160,8 @@ func NewContainer() (*Container, error) {
 	container.Services.JWKSManager = jwksManager
 
 	// Initialize Access
-	acc := helpers.NewAccess(container.Redis, container.DB)
+	// Access loads role/permission names through the repository (one JOIN query).
+	acc := helpers.NewAccess(container.Redis, container.Repositories.UserRole.FindAccessNames)
 	container.Access = acc
 	container.Services.Access = acc
 

@@ -72,7 +72,7 @@ func (s *Services) UserCreate(ctx context.Context, req dtos.UserCreateRequest) (
 	})
 	if err != nil {
 		s.Logger.LogEndWithError("UserCreate", "Failed to create user: %v", err)
-		return nil, err
+		return nil, duplicateAsFieldError(err, "email", "user already exists")
 	}
 
 	result := res.(*models.User)
@@ -106,21 +106,16 @@ func (s *Services) UserGetAll(ctx context.Context, opts *repositories.QueryOptio
 	}
 	opts.Preloads = []string{"Roles"}
 
+	var (
+		result *repositories.PagedResult[models.User]
+		err    error
+	)
 	if roleID > 0 {
-		userIDs, err := s.repo.UserRole.FindUserIDsByRoleID(roleID)
-		if err != nil {
-			return nil, err
-		}
-
-		opts.ConditionGroups = append(opts.ConditionGroups, repositories.ConditionGroup{
-			Logic: "AND",
-			Conditions: []repositories.QueryCondition{
-				{Column: "id", Operator: "IN", Value: userIDs},
-			},
-		})
+		// Role filter is a subquery inside the repository — one round-trip.
+		result, err = s.repo.User.FindAllByRoleWithOpts(nil, roleID, opts)
+	} else {
+		result, err = s.repo.User.FindAllWithOpts(nil, opts)
 	}
-
-	result, err := s.repo.User.FindAllWithOpts(nil, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +302,7 @@ func (s *Services) UserUpdate(ctx context.Context, id uint, req dtos.UserUpdateR
 	})
 	if err != nil {
 		s.Logger.LogEndWithError("UserUpdate", "Failed to update user: %v", err)
-		return nil, err
+		return nil, duplicateAsFieldError(err, "email", "user already exists")
 	}
 
 	if oldAvatar != "" {

@@ -36,10 +36,11 @@ func (r *PasswordResetRepository) FindByToken(tx *gorm.DB, token string) (*model
 	return &reset, nil
 }
 
-// InvalidateByEmail marks all password reset tokens for an email as used.
-func (r *PasswordResetRepository) InvalidateByEmail(email string) error {
-	query := r.DB.Model(&models.PasswordReset{}).Where("email = ?", email).Update("used", true)
-	return query.Error
+// InvalidateByEmail marks all unused password reset tokens for an email as used.
+func (r *PasswordResetRepository) InvalidateByEmail(tx *gorm.DB, email string) error {
+	return r.getDB(tx).Model(&models.PasswordReset{}).
+		Where("email = ? AND used = ?", email, false).
+		Update("used", true).Error
 }
 
 // InvalidateToken marks a specific token as used.

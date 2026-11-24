@@ -1,6 +1,6 @@
 ---
 name: api-documentation
-description: Generate API documentation from Go/Gin routes, handlers, and DTOs
+description: Generate or update API documentation (Markdown, OpenAPI/Swagger, Postman collection) from Go/Gin routes, handlers and DTOs. Use when asked to document endpoints, write an API spec or swagger/openapi file, list routes, or share request/response examples with frontend/mobile developers.
 ---
 
 ## What I do

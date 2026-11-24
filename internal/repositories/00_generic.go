@@ -2,6 +2,8 @@ package repositories
 
 import (
 	"errors"
+	"fmt"
+	"regexp"
 	"strings"
 
 	"gorm.io/gorm"
@@ -80,19 +82,40 @@ func (r *GenericRepository[T]) getDB(tx *gorm.DB) *gorm.DB {
 	return r.DB
 }
 
-// applyOptions applies query options to a DB query
-func (r *GenericRepository[T]) applyOptions(db *gorm.DB, opts *QueryOptions) *gorm.DB {
+// identifierPattern allows "column" or "table.column" — nothing that can carry SQL.
+var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$`)
+
+// allowedOperators is the whitelist for QueryCondition.Operator.
+var allowedOperators = map[string]bool{
+	"=": true, "!=": true, "<>": true, "<": true, "<=": true, ">": true, ">=": true,
+	"LIKE": true, "NOT LIKE": true, "ILIKE": true, "IN": true, "NOT IN": true,
+}
+
+// ErrInvalidQueryOption is returned when SortBy, a condition column or an
+// operator is not a safe identifier/whitelisted operator. These values are
+// concatenated into SQL, so they must never come unchecked from user input.
+var ErrInvalidQueryOption = errors.New("invalid query option")
+
+func validateIdentifier(name string) error {
+	if !identifierPattern.MatchString(name) {
+		return fmt.Errorf("%w: column %q", ErrInvalidQueryOption, name)
+	}
+	return nil
+}
+
+// applyFilters applies sorting, WHERE condition groups and omits — everything
+// that shapes WHICH rows are returned. Preloads are applied separately (only on
+// the data query) so COUNT(*) never triggers relation loading.
+func (r *GenericRepository[T]) applyFilters(db *gorm.DB, opts *QueryOptions) (*gorm.DB, error) {
 	if opts == nil {
-		return db
+		return db, nil
 	}
 
-	// Preload relations
-	for _, preload := range opts.Preloads {
-		db = db.Preload(preload)
-	}
-
-	// Sorting
+	// Sorting (identifier is validated because it is concatenated into SQL)
 	if opts.SortBy != "" {
+		if err := validateIdentifier(opts.SortBy); err != nil {
+			return nil, err
+		}
 		order := "ASC"
 		if strings.ToUpper(opts.Order) == "DESC" {
 			order = "DESC"
@@ -109,13 +132,20 @@ func (r *GenericRepository[T]) applyOptions(db *gorm.DB, opts *QueryOptions) *go
 		if strings.ToUpper(group.Logic) == "OR" {
 			logic = "OR"
 		}
-		var clauses []string
+		clauses := make([]string, 0, len(group.Conditions))
 		args := make([]interface{}, 0, len(group.Conditions))
 		for _, cond := range group.Conditions {
-			clauses = append(clauses, cond.Column+" "+cond.Operator+" ?")
+			if err := validateIdentifier(cond.Column); err != nil {
+				return nil, err
+			}
+			op := strings.ToUpper(strings.TrimSpace(cond.Operator))
+			if !allowedOperators[op] {
+				return nil, fmt.Errorf("%w: operator %q", ErrInvalidQueryOption, cond.Operator)
+			}
+			clauses = append(clauses, cond.Column+" "+op+" ?")
 			args = append(args, cond.Value)
 		}
-		db = db.Where(strings.Join(clauses, " "+logic+" "), args...)
+		db = db.Where("("+strings.Join(clauses, " "+logic+" ")+")", args...)
 	}
 
 	// Omit columns
@@ -123,6 +153,15 @@ func (r *GenericRepository[T]) applyOptions(db *gorm.DB, opts *QueryOptions) *go
 		db = db.Omit(opts.Omits...)
 	}
 
+	return db, nil
+}
+
+// applyPreloads applies relation preloads (one extra query per relation level,
+// never one per row — this is the N+1-safe way to load has-many relations).
+func applyPreloads(db *gorm.DB, preloads []string) *gorm.DB {
+	for _, preload := range preloads {
+		db = db.Preload(preload)
+	}
 	return db
 }
 
@@ -132,10 +171,7 @@ func (r *GenericRepository[T]) FindByID(tx *gorm.DB, id uint, preloads ...string
 	var instance *T
 	query := db.Model(&instance).Where("id = ?", id)
 
-	// Preload relations
-	for _, preload := range preloads {
-		query = query.Preload(preload)
-	}
+	query = applyPreloads(query, preloads)
 
 	if err := query.First(&instance).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -150,7 +186,13 @@ func (r *GenericRepository[T]) FindByID(tx *gorm.DB, id uint, preloads ...string
 func (r *GenericRepository[T]) FindByIDWithOpts(tx *gorm.DB, id uint, opts *QueryOptions) (*T, error) {
 	db := r.getDB(tx)
 	var instance *T
-	query := r.applyOptions(db, opts)
+	query, err := r.applyFilters(db, opts)
+	if err != nil {
+		return nil, err
+	}
+	if opts != nil {
+		query = applyPreloads(query, opts.Preloads)
+	}
 
 	if err := query.Where("id = ?", id).First(&instance).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -238,10 +280,7 @@ func (r *GenericRepository[T]) FindAll(tx *gorm.DB, preloads ...string) ([]T, er
 	var instance *T
 	query := db.Model(&instance)
 
-	// Preload relations
-	for _, preload := range preloads {
-		query = query.Preload(preload)
-	}
+	query = applyPreloads(query, preloads)
 
 	datas := []T{}
 	if err := query.Find(&datas).Error; err != nil {
@@ -254,13 +293,25 @@ func (r *GenericRepository[T]) FindAll(tx *gorm.DB, preloads ...string) ([]T, er
 // FindAllWithOpts finds all records with query options (supports pagination, sorting, preloads, search).
 // opts.PageSize < 0 returns all records without pagination.
 func (r *GenericRepository[T]) FindAllWithOpts(tx *gorm.DB, opts *QueryOptions) (*PagedResult[T], error) {
-	db := r.getDB(tx)
-	var instance *T
-	query := r.applyOptions(db, opts)
+	return r.findPaged(r.getDB(tx).Model(new(T)), opts)
+}
 
-	// Get total count
+// findPaged runs a COUNT + paginated SELECT on a base query (which may already
+// carry custom WHERE/JOIN clauses). Custom repository methods that need extra
+// conditions the generic QueryOptions cannot express (subqueries, JOINs) build
+// their base query and call this instead of re-implementing pagination.
+//
+// COUNT runs without preloads/ORDER BY; preloads run only for the page of rows
+// actually returned.
+func (r *GenericRepository[T]) findPaged(base *gorm.DB, opts *QueryOptions) (*PagedResult[T], error) {
+	query, err := r.applyFilters(base, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get total count (Session keeps the count from mutating the data query)
 	var total int64
-	if err := query.Model(&instance).Count(&total).Error; err != nil {
+	if err := query.Session(&gorm.Session{}).Count(&total).Error; err != nil {
 		return nil, err
 	}
 
@@ -280,14 +331,18 @@ func (r *GenericRepository[T]) FindAllWithOpts(tx *gorm.DB, opts *QueryOptions) 
 		}
 	}
 
-	if pageSize > 0 {
-		offset := (page - 1) * pageSize
-		query = query.Limit(pageSize).Offset(offset)
-	}
-
 	datas := []T{}
-	if err := query.Find(&datas).Error; err != nil {
-		return nil, err
+	if total > 0 {
+		dataQuery := query
+		if opts != nil {
+			dataQuery = applyPreloads(dataQuery, opts.Preloads)
+		}
+		if pageSize > 0 {
+			dataQuery = dataQuery.Limit(pageSize).Offset((page - 1) * pageSize)
+		}
+		if err := dataQuery.Find(&datas).Error; err != nil {
+			return nil, err
+		}
 	}
 
 	totalPages := 1
@@ -313,10 +368,7 @@ func (r *GenericRepository[T]) FindByField(tx *gorm.DB, filter *T, preloads ...s
 	var instance *T
 	query := db.Model(&instance).Where(filter)
 
-	// Preload relations
-	for _, preload := range preloads {
-		query = query.Preload(preload)
-	}
+	query = applyPreloads(query, preloads)
 
 	datas := []T{}
 	if err := query.Find(&datas).Error; err != nil {
@@ -332,10 +384,7 @@ func (r *GenericRepository[T]) FindByFieldMap(tx *gorm.DB, filter map[string]int
 	var instance *T
 	query := db.Model(&instance).Where(filter)
 
-	// Preload relations
-	for _, preload := range preloads {
-		query = query.Preload(preload)
-	}
+	query = applyPreloads(query, preloads)
 
 	datas := []T{}
 	if err := query.Find(&datas).Error; err != nil {
@@ -358,26 +407,21 @@ func (r *GenericRepository[T]) Count(tx *gorm.DB) (int64, error) {
 
 // ExistsWithMap checks if a record exists by filter map (supports zero values like 0, false, "")
 func (r *GenericRepository[T]) ExistsWithMap(tx *gorm.DB, filter map[string]interface{}) (bool, error) {
-	db := r.getDB(tx)
-	var instance *T
-	var count int64
-
-	if err := db.Model(&instance).Where(filter).Limit(1).Count(&count).Error; err != nil {
-		return false, err
-	}
-
-	return count > 0, nil
+	return r.exists(r.getDB(tx).Model(new(T)).Where(filter))
 }
 
 // Exists checks if a record exists by struct filter (note: ignores zero values)
 func (r *GenericRepository[T]) Exists(tx *gorm.DB, filter *T) (bool, error) {
-	db := r.getDB(tx)
-	var instance *T
-	var count int64
+	return r.exists(r.getDB(tx).Model(new(T)).Where(filter))
+}
 
-	if err := db.Model(&instance).Where(filter).Limit(1).Count(&count).Error; err != nil {
-		return false, err
+// exists runs SELECT 1 ... LIMIT 1, which stops at the first match instead of
+// counting every matching row like COUNT(*) does.
+func (r *GenericRepository[T]) exists(query *gorm.DB) (bool, error) {
+	var found int
+	res := query.Select("1").Limit(1).Scan(&found)
+	if res.Error != nil {
+		return false, res.Error
 	}
-
-	return count > 0, nil
+	return res.RowsAffected > 0, nil
 }

@@ -20,8 +20,8 @@ Use this skill when:
 ### Step 1: Confirm Service Flavor
 
 - Ask the user which boilerplate flavor to initialize:
-  - **Fullservice** — monolith with local auth (JWT + Role/Permission), Notification, and optionally Asynq background jobs.
-  - **Microservice** — runs behind an api-gateway; identity comes from gateway headers/JWKS instead of local auth, no Notification/Jobs by default.
+  - **Fullservice** — monolith with local auth (JWT + Role/Permission), and Notification (background work via goroutines, no job queue).
+  - **Microservice** — runs behind an api-gateway; identity comes from gateway headers/JWKS instead of local auth, no Notification by default.
 - Wait for user confirmation. This determines which repo to clone in Step 4 and which skill defaults (see `go-coding-rules` → "Service Topology") apply once implementation starts.
 
 ### Step 2: Confirm Target Path

@@ -3,7 +3,6 @@ package middleware
 import (
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -43,28 +42,10 @@ func RateLimit(limiter *helpers.RateLimiter) gin.HandlerFunc {
 	}
 }
 
-// getClientIP extracts the real client IP from the request,
-// considering X-Forwarded-For and X-Real-IP headers for proxied requests.
+// getClientIP returns the client IP using gin's ClientIP(), which only honours
+// X-Forwarded-For / X-Real-IP when the request comes from a proxy listed in
+// TRUSTED_PROXIES. Reading those headers directly would let any client pick its
+// own IP and bypass the rate limit.
 func getClientIP(c *gin.Context) string {
-	// Check X-Forwarded-For header (can contain multiple IPs)
-	xff := c.GetHeader("X-Forwarded-For")
-	if xff != "" {
-		// Take the first IP (original client)
-		ips := strings.Split(xff, ",")
-		if len(ips) > 0 {
-			ip := strings.TrimSpace(ips[0])
-			if ip != "" {
-				return ip
-			}
-		}
-	}
-
-	// Check X-Real-IP header
-	xri := c.GetHeader("X-Real-IP")
-	if xri != "" {
-		return strings.TrimSpace(xri)
-	}
-
-	// Fallback to RemoteAddr
 	return c.ClientIP()
 }
